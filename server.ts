@@ -1,30 +1,32 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import { Server } from "socket.io";
 import http from "http";
-import path from "path";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
   const server = http.createServer(app);
   
   const io = new Server(server, {
     cors: {
-      origin: "*",
-      methods: ["GET", "POST"]
+      origin:[
+        "http://localhost:5173", // <-- Adicionei a 5173 que é a porta do teu Vite local
+        "http://localhost:3000",
+        "https://quickfoosball.web.app",
+        "https://quickfoosball.firebaseapp.com"
+      ],
+      methods: ["GET", "POST"],
+      credentials: true
     }
   });
 
-  // API routes FIRST
+  // Rota para testar se o servidor está vivo!
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
+    res.json({ status: "ok", message: "O backend QuickFoosball está a correr!" });
   });
 
   type GameMode = '1v1' | '2v2' | '3v3' | 'solo';
   type Player = { id: string, name: string, team: 1 | 2, role: number };
 
-  // Multiplayer state
   const rooms: Record<string, {
     mode: GameMode;
     status: 'lobby' | 'playing' | 'gameover';
@@ -44,11 +46,8 @@ async function startServer() {
       rooms[roomId] = {
         mode,
         status: mode === 'solo' ? 'playing' : 'lobby',
-        players: [{ id: socket.id, name, team: 1, role: 0 }],
-        score1: 0,
-        score2: 0,
-        resetVotes: new Set(),
-        chat: []
+        players:[{ id: socket.id, name, team: 1, role: 0 }],
+        score1: 0, score2: 0, resetVotes: new Set(), chat:[]
       };
       callback({ success: true, roomId, roomState: rooms[roomId] });
     });
@@ -59,7 +58,6 @@ async function startServer() {
         callback({ success: false, message: "Room not found" });
         return;
       }
-      
       const maxPlayers = room.mode === '1v1' || room.mode === 'solo' ? 2 : room.mode === '2v2' ? 4 : 6;
       if (room.players.length >= maxPlayers) {
         callback({ success: false, message: "Room is full" });
@@ -67,10 +65,8 @@ async function startServer() {
       }
       
       socket.join(roomId);
-      
       let assignedTeam: 1 | 2 = 2;
       let assignedRole = 0;
-      
       const getRoles = (team: 1|2) => room.players.filter(p => p.team === team).map(p => p.role);
       const rolesPerTeam = room.mode === '1v1' || room.mode === 'solo' ? 1 : room.mode === '2v2' ? 2 : 3;
       
@@ -79,18 +75,13 @@ async function startServer() {
         const taken = getRoles(t);
         for (let r = 0; r < rolesPerTeam; r++) {
           if (!taken.includes(r)) {
-            assignedTeam = t;
-            assignedRole = r;
-            found = true;
-            break;
+            assignedTeam = t; assignedRole = r; found = true; break;
           }
         }
         if (found) break;
       }
 
-      const newPlayer = { id: socket.id, name, team: assignedTeam, role: assignedRole };
-      room.players.push(newPlayer);
-      
+      room.players.push({ id: socket.id, name, team: assignedTeam, role: assignedRole });
       callback({ success: true, roomId, roomState: room });
       io.to(roomId).emit("room_updated", room);
     });
@@ -101,8 +92,7 @@ async function startServer() {
         const player = room.players.find(p => p.id === socket.id);
         const isTaken = room.players.some(p => p.team === team && p.role === role);
         if (player && !isTaken) {
-          player.team = team;
-          player.role = role;
+          player.team = team; player.role = role;
           io.to(roomId).emit("room_updated", room);
         }
       }
@@ -140,15 +130,12 @@ async function startServer() {
     socket.on("score", ({ roomId, player }) => {
       const room = rooms[roomId];
       if (room && room.status === 'playing') {
-        if (player === 1) room.score1++;
-        else room.score2++;
+        player === 1 ? room.score1++ : room.score2++;
         io.to(roomId).emit("score_update", { score1: room.score1, score2: room.score2 });
-        
         if (room.score1 >= 7 || room.score2 >= 7) {
           room.status = 'gameover';
           io.to(roomId).emit("game_over", { winner: room.score1 >= 7 ? 1 : 2, score1: room.score1, score2: room.score2 });
         } else {
-          // Automatically reset the ball after a goal
           io.to(roomId).emit("trigger_reset");
           room.resetVotes.clear();
           io.to(roomId).emit("reset_votes", 0);
@@ -161,7 +148,6 @@ async function startServer() {
       if (room) {
         room.resetVotes.add(socket.id);
         io.to(roomId).emit("reset_votes", room.resetVotes.size);
-        
         if (room.resetVotes.size >= Math.min(2, room.players.length)) {
           io.to(roomId).emit("trigger_reset");
           room.resetVotes.clear();
@@ -173,9 +159,7 @@ async function startServer() {
     socket.on("play_again", ({ roomId }) => {
       const room = rooms[roomId];
       if (room && room.status === 'gameover') {
-        room.status = 'playing';
-        room.score1 = 0;
-        room.score2 = 0;
+        room.status = 'playing'; room.score1 = 0; room.score2 = 0;
         io.to(roomId).emit("room_updated", room);
         io.to(roomId).emit("score_update", { score1: 0, score2: 0 });
         io.to(roomId).emit("trigger_reset");
@@ -189,14 +173,11 @@ async function startServer() {
         if (playerIndex !== -1) {
           room.players.splice(playerIndex, 1);
           room.resetVotes.delete(socketId);
-          
           if (room.players.length === 0) {
             delete rooms[roomId];
           } else {
             if (room.status === 'playing' || room.status === 'gameover') {
-              room.score1 = 0;
-              room.score2 = 0;
-              room.status = 'lobby';
+              room.score1 = 0; room.score2 = 0; room.status = 'lobby';
               io.to(roomId).emit("score_update", { score1: 0, score2: 0 });
               io.to(roomId).emit("trigger_reset");
             }
@@ -207,33 +188,13 @@ async function startServer() {
       }
     };
 
-    socket.on("leave_room", () => {
-      handlePlayerLeave(socket.id);
-    });
-
-    socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.id);
-      handlePlayerLeave(socket.id);
-    });
+    socket.on("leave_room", () => handlePlayerLeave(socket.id));
+    socket.on("disconnect", () => handlePlayerLeave(socket.id));
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
-
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const PORT = parseInt(process.env.PORT || '3000', 10); 
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server is running on port ${PORT}`);
   });
 }
 

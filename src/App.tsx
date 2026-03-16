@@ -6,7 +6,14 @@ import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
 
 // --- Socket ---
-const socket: Socket = io();
+// O Vite sabe automaticamente se estás a correr localmente (dev) ou em produção (build)
+const socketUrl = import.meta.env.PROD 
+  ? "https://quickfoosball-production.up.railway.app"
+  : "http://localhost:3000";
+
+const socket = io(socketUrl, {
+  transports: ['websocket', 'polling'] // Garante a melhor conexão
+});
 
 // --- Global State for CPU ---
 export const globalBallPos = new THREE.Vector3();
