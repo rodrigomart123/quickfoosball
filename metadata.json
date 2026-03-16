@@ -1,0 +1,5 @@
+{
+  "name": "QuickFoosball",
+  "description": "A local multiplayer 3D foosball game with realistic physics, top-down camera, and classic foosball controls.",
+  "requestFramePermissions": []
+}
