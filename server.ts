@@ -9,7 +9,7 @@ async function startServer() {
   const io = new Server(server, {
     cors: {
       origin:[
-        "http://localhost:5173", // <-- Adicionei a 5173 que é a porta do teu Vite local
+        "http://localhost:5173",
         "http://localhost:3000",
         "https://quickfoosball.web.app",
         "https://quickfoosball.firebaseapp.com"
@@ -19,13 +19,13 @@ async function startServer() {
     }
   });
 
-  // Rota para testar se o servidor está vivo!
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", message: "O backend QuickFoosball está a correr!" });
   });
 
   type GameMode = '1v1' | '2v2' | '3v3' | 'solo';
   type Player = { id: string, name: string, team: 1 | 2, role: number };
+  type ChatMessage = { sender: string, text: string, team?: 1 | 2, system?: boolean };
 
   const rooms: Record<string, {
     mode: GameMode;
@@ -34,7 +34,7 @@ async function startServer() {
     score1: number;
     score2: number;
     resetVotes: Set<string>;
-    chat: { sender: string, text: string }[];
+    chat: ChatMessage[];
   }> = {};
 
   io.on("connection", (socket) => {
@@ -49,6 +49,10 @@ async function startServer() {
         players:[{ id: socket.id, name, team: 1, role: 0 }],
         score1: 0, score2: 0, resetVotes: new Set(), chat:[]
       };
+      
+      const joinMsg = { sender: 'System', text: `${name} criou a sala!`, system: true };
+      rooms[roomId].chat.push(joinMsg);
+
       callback({ success: true, roomId, roomState: rooms[roomId] });
     });
 
@@ -71,7 +75,7 @@ async function startServer() {
       const rolesPerTeam = room.mode === '1v1' || room.mode === 'solo' ? 1 : room.mode === '2v2' ? 2 : 3;
       
       let found = false;
-      for (const t of [2, 1] as const) {
+      for (const t of[2, 1] as const) {
         const taken = getRoles(t);
         for (let r = 0; r < rolesPerTeam; r++) {
           if (!taken.includes(r)) {
@@ -82,6 +86,13 @@ async function startServer() {
       }
 
       room.players.push({ id: socket.id, name, team: assignedTeam, role: assignedRole });
+      
+      // Mensagem de sistema que o jogador entrou
+      const joinMsg = { sender: 'System', text: `${name} juntou-se à partida!`, system: true };
+      room.chat.push(joinMsg);
+      if (room.chat.length > 50) room.chat.shift();
+      io.to(roomId).emit("chat_message", joinMsg);
+
       callback({ success: true, roomId, roomState: room });
       io.to(roomId).emit("room_updated", room);
     });
@@ -111,7 +122,7 @@ async function startServer() {
       if (room) {
         const player = room.players.find(p => p.id === socket.id);
         if (player) {
-          const msg = { sender: player.name, text };
+          const msg = { sender: player.name, text, team: player.team };
           room.chat.push(msg);
           if (room.chat.length > 50) room.chat.shift();
           io.to(roomId).emit("chat_message", msg);
@@ -171,6 +182,14 @@ async function startServer() {
         const room = rooms[roomId];
         const playerIndex = room.players.findIndex(p => p.id === socketId);
         if (playerIndex !== -1) {
+          const player = room.players[playerIndex];
+          
+          // Mensagem de sistema que o jogador saiu
+          const leaveMsg = { sender: 'System', text: `${player.name} abandonou a partida.`, system: true };
+          room.chat.push(leaveMsg);
+          if (room.chat.length > 50) room.chat.shift();
+          io.to(roomId).emit("chat_message", leaveMsg);
+
           room.players.splice(playerIndex, 1);
           room.resetVotes.delete(socketId);
           if (room.players.length === 0) {
