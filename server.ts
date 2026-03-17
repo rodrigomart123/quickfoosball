@@ -16,7 +16,10 @@ async function startServer() {
       ],
       methods: ["GET", "POST"],
       credentials: true
-    }
+    },
+    // OTIMIZAÇÃO ANTI-DISCONNECT: Dá mais tempo antes de expulsar o jogador se a net dele falhar por uns segundos
+    pingTimeout: 60000,
+    pingInterval: 25000
   });
 
   app.get("/api/health", (req, res) => {
@@ -87,7 +90,6 @@ async function startServer() {
 
       room.players.push({ id: socket.id, name, team: assignedTeam, role: assignedRole });
       
-      // Mensagem de sistema que o jogador entrou
       const joinMsg = { sender: 'System', text: `${name} juntou-se à partida!`, system: true };
       room.chat.push(joinMsg);
       if (room.chat.length > 50) room.chat.shift();
@@ -184,7 +186,6 @@ async function startServer() {
         if (playerIndex !== -1) {
           const player = room.players[playerIndex];
           
-          // Mensagem de sistema que o jogador saiu
           const leaveMsg = { sender: 'System', text: `${player.name} abandonou a partida.`, system: true };
           room.chat.push(leaveMsg);
           if (room.chat.length > 50) room.chat.shift();

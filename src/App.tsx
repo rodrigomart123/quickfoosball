@@ -8,12 +8,17 @@ import { io } from 'socket.io-client';
 // Deteção global de Mobile mais robusta
 const isMobileDevice = typeof window !== 'undefined' && (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || ('ontouchstart' in window) || navigator.maxTouchPoints > 0);
 
-// --- Socket ---
+// --- Socket OTIMIZADO ---
 const socketUrl = import.meta.env.PROD 
   ? "https://quickfoosball-production.up.railway.app"
   : "http://localhost:3000";
 
-const socket = io(socketUrl, { transports: ['websocket', 'polling'] });
+const socket = io(socketUrl, { 
+  transports: ['websocket', 'polling'],
+  reconnection: true,             // Tenta sempre reconectar se a net falhar
+  reconnectionAttempts: 15,       // Mais tentativas antes de desistir
+  reconnectionDelay: 1000,
+});
 
 // --- Global State for CPU ---
 export const globalBallPos = new THREE.Vector3();
@@ -69,7 +74,7 @@ function doesPlayerControlRod(mode: GameMode, team: 1 | 2, role: number, rodInde
 
 // --- Controls ---
 export const keys: Record<string, boolean> = {
-  w: false, s: false, a: false, d: false, e: false, E: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false
+  w: false, s: false, a: false, d: false, e: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false
 };
 
 const KeyboardController = () => {
@@ -79,9 +84,17 @@ const KeyboardController = () => {
       if (e.code === 'Space' && useGameStore.getState().lobbyState === 'playing') socket.emit('vote_reset', { roomId: useGameStore.getState().roomId });
       if (e.key === '0' && useGameStore.getState().lobbyState === 'playing') useGameStore.setState(state => ({ cameraMode: (state.cameraMode + 1) % 3 }));
       if (e.key === '1' && useGameStore.getState().lobbyState === 'playing') useGameStore.setState(state => ({ highlightTrigger: state.highlightTrigger + 1 }));
-      if (keys.hasOwnProperty(e.key)) keys[e.key] = true;
+      
+      // FIX CRÍTICO PARA WASD (Lida automaticamente com Caps Lock / Shift ativados)
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      if (keys.hasOwnProperty(key)) keys[key] = true;
     };
-    const handleKeyUp = (e: KeyboardEvent) => { if (keys.hasOwnProperty(e.key)) keys[e.key] = false; };
+    
+    const handleKeyUp = (e: KeyboardEvent) => { 
+      const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      if (keys.hasOwnProperty(key)) keys[key] = false; 
+    };
+    
     window.addEventListener('keydown', handleKeyDown); window.addEventListener('keyup', handleKeyUp);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keyup', handleKeyUp); };
   },[]);
@@ -122,7 +135,7 @@ const OrientationLock = () => {
 
 // --- Components ---
 const Field = () => {
-  const[ref] = useBox(() => ({ type: 'Static', args:[25.0, 1, 16], position:[0, -1.7, 0] }));
+  const [ref] = useBox(() => ({ type: 'Static', args:[25.0, 1, 16], position:[0, -1.7, 0] }));
   const [corner1] = useBox(() => ({ type: 'Static', args: [1.5, 1, 5.5], position:[-13.25, -1.7, -5.25] }));
   const [corner2] = useBox(() => ({ type: 'Static', args:[1.5, 1, 5.5], position:[-13.25, -1.7, 5.25] }));
   const[corner3] = useBox(() => ({ type: 'Static', args:[1.5, 1, 5.5], position:[13.25, -1.7, -5.25] }));
@@ -173,13 +186,13 @@ const SlopedCorner = ({ position, rotationY }: { position:[number, number, numbe
 
 const InvisibleBoundaries = () => {
   const [ref1] = useBox(() => ({ type: 'Static', args:[30, 20, 2], position: [0, 5, -8.0] })); 
-  const [ref2] = useBox(() => ({ type: 'Static', args:[30, 20, 2], position:[0, 5, 8.0] }));  
+  const[ref2] = useBox(() => ({ type: 'Static', args:[30, 20, 2], position:[0, 5, 8.0] }));  
   const [ref3] = useBox(() => ({ type: 'Static', args:[2, 20, 20], position:[-14.5, 5, 0] }));  
   const [ref4] = useBox(() => ({ type: 'Static', args: [2, 20, 20], position:[14.5, 5, 0] }));  
   const [ref5] = useBox(() => ({ type: 'Static', args: [2, 20, 5], position:[-13.0, 5, -5] }));
   const [ref6] = useBox(() => ({ type: 'Static', args:[2, 20, 5], position:[-13.0, 5, 5] }));
   const [ref7] = useBox(() => ({ type: 'Static', args:[2, 20, 5], position:[13.0, 5, -5] }));
-  const [ref8] = useBox(() => ({ type: 'Static', args:[2, 20, 5], position:[13.0, 5, 5] }));
+  const[ref8] = useBox(() => ({ type: 'Static', args:[2, 20, 5], position:[13.0, 5, 5] }));
   const [ref9] = useBox(() => ({ type: 'Static', args:[100, 2, 100], position:[0, 15.0, 0] })); // Ceiling
   
   // FUNIS INVISÍVEIS PARA A BOLA NÃO FICAR PRESA NAS PAREDES
@@ -248,7 +261,8 @@ const Ball = () => {
   const pos = useRef([0,0,0]);
   const vel = useRef([0,0,0]);
   const isResetting = useRef(false);
-  const syncTimer = useRef(0); // TIMER PARA RESOLVER O LAG DE REDE!
+  const syncTimer = useRef(0);
+  const lastSync = useRef({ p: [0,0,0], v: [0,0,0] }); // MEMÓRIA PARA OTIMIZAÇÃO
 
   useEffect(() => {
     const unsubPos = api.position.subscribe(p => { pos.current = p; globalBallPos.set(p[0], p[1], p[2]); });
@@ -271,7 +285,7 @@ const Ball = () => {
     api.position.set(0, 1, 0);
     api.velocity.set((Math.random() - 0.5) * 15, 0, (Math.random() - 0.5) * 15);
     api.angularVelocity.set(0, 0, 0);
-  }, [resetTrigger, api]);
+  },[resetTrigger, api]);
 
   const vec = new THREE.Vector3();
   const target = new THREE.Vector3();
@@ -338,10 +352,19 @@ const Ball = () => {
           api.velocity.set(vel.current[0] * 0.5, vel.current[1] * 0.5, vel.current[2] * 0.5);
         }
 
-        // OTIMIZAÇÃO: Limitar envios de rede a 30 vezes por segundo para matar o Lag!
+        // OTIMIZAÇÃO MASSIVA DE REDE (DELTA SYNC)
         syncTimer.current += delta;
         if (syncTimer.current >= 0.033) {
-          socket.emit('sync_ball', { roomId, position:[clampedX, clampedY, clampedZ], velocity: vel.current });
+          const p = [clampedX, clampedY, clampedZ];
+          const v = vel.current;
+          // Só envia pacote para o servidor se a bola realmente tiver se movido/alterado a velocidade
+          const pChanged = Math.abs(lastSync.current.p[0] - p[0]) > 0.05 || Math.abs(lastSync.current.p[2] - p[2]) > 0.05;
+          const vChanged = Math.abs(lastSync.current.v[0] - v[0]) > 0.5 || Math.abs(lastSync.current.v[2] - v[2]) > 0.5;
+          
+          if (pChanged || vChanged) {
+            socket.emit('sync_ball', { roomId, position: p, velocity: v });
+            lastSync.current = { p: [...p], v: [...v] };
+          }
           syncTimer.current = 0;
         }
 
@@ -389,7 +412,8 @@ const Rod = ({ rodIndex, x, playerPositions, isPlayer1Rod, color }: { rodIndex: 
   const rouletteAngle = useRef(0);
   const rouletteCooldown = useRef(0);
   const highlightTimer = useRef(0);
-  const syncTimer = useRef(0); // TIMER PARA RESOLVER O LAG DE REDE!
+  const syncTimer = useRef(0);
+  const lastSync = useRef({ zPos: 0, angle: 0 }); // MEMÓRIA PARA OTIMIZAÇÃO
   const bodyMats = useRef<THREE.MeshStandardMaterial[][]>([]);
   const { highlightTrigger } = useGameStore();
 
@@ -420,7 +444,7 @@ const Rod = ({ rodIndex, x, playerPositions, isPlayer1Rod, color }: { rodIndex: 
       if (keys.w || keys.ArrowUp) moveDir -= 1;
       if (keys.s || keys.ArrowDown) moveDir += 1;
       
-      if (keys.e || keys.E) doRoulette = true;
+      if (keys.e) doRoulette = true;
       else if (keys.d || keys.ArrowRight) targetAngle = Math.PI / 2;
       else if (keys.a || keys.ArrowLeft) targetAngle = -Math.PI / 2;
 
@@ -529,10 +553,14 @@ const Rod = ({ rodIndex, x, playerPositions, isPlayer1Rod, color }: { rodIndex: 
     api.velocity.set(0, 0, moveDir * speed);
     api.angularVelocity.set(0, 0, angularVel);
 
-    // OTIMIZAÇÃO: Limitar envios de rede a 30 vezes por segundo para matar o Lag!
+    // OTIMIZAÇÃO MASSIVA DE REDE (DELTA SYNC)
     syncTimer.current += delta;
     if (syncTimer.current >= 0.033) {
-      socket.emit('sync_rod', { roomId, rodIndex, zPos: zPos.current, angle: angle.current });
+      // Só envia pacote se o jogador mexeu na barra (poupa milhares de envios por minuto!)
+      if (Math.abs(lastSync.current.zPos - zPos.current) > 0.01 || Math.abs(lastSync.current.angle - angle.current) > 0.05) {
+        socket.emit('sync_rod', { roomId, rodIndex, zPos: zPos.current, angle: angle.current });
+        lastSync.current = { zPos: zPos.current, angle: angle.current };
+      }
       syncTimer.current = 0;
     }
   });
@@ -565,7 +593,7 @@ const Rod = ({ rodIndex, x, playerPositions, isPlayer1Rod, color }: { rodIndex: 
           </mesh>
           <mesh position={[0, -1.0, 0]} castShadow>
             <boxGeometry args={[0.4, 0.2, 0.4]} />
-            <meshStandardMaterial ref={(el) => { if (el) { if (!bodyMats.current[i]) bodyMats.current[i] = []; bodyMats.current[i][3] = el; } }} color={color} />
+            <meshStandardMaterial ref={(el) => { if (el) { if (!bodyMats.current[i]) bodyMats.current[i] =[]; bodyMats.current[i][3] = el; } }} color={color} />
           </mesh>
         </group>
       ))}
@@ -731,7 +759,7 @@ const RoomLobby = () => {
 const MainMenu = () => {
   const { setGameState } = useGameStore();
   const[joinCode, setJoinCode] = useState('');
-  const [playerName, setPlayerName] = useState(() => localStorage.getItem('foosball_name') || 'Player' + Math.floor(Math.random() * 1000));
+  const[playerName, setPlayerName] = useState(() => localStorage.getItem('foosball_name') || 'Player' + Math.floor(Math.random() * 1000));
   const[error, setError] = useState('');
 
   useEffect(() => { if (playerName.trim()) localStorage.setItem('foosball_name', playerName.trim()); }, [playerName]);
@@ -886,7 +914,7 @@ const MobileControls = () => {
           <button onTouchStart={handleTouchStart('e')} onTouchEnd={handleTouchEnd('e')} onMouseDown={handleTouchStart('e')} onMouseUp={handleTouchEnd('e')} onMouseLeave={handleTouchEnd('e')} className="w-16 h-16 lg:w-20 lg:h-20 bg-emerald-500/60 active:bg-emerald-500/90 rounded-full border border-emerald-400/50 flex items-center justify-center backdrop-blur-md mb-1 lg:mb-2 shadow-[0_0_15px_rgba(16,185,129,0.5)]"><span className="text-white font-black text-sm lg:text-lg">POW</span></button>
           <div className="flex gap-2 lg:gap-4">
             <button onTouchStart={handleTouchStart('a')} onTouchEnd={handleTouchEnd('a')} onMouseDown={handleTouchStart('a')} onMouseUp={handleTouchEnd('a')} onMouseLeave={handleTouchEnd('a')} className="w-14 h-14 lg:w-16 lg:h-16 bg-white/10 active:bg-white/30 rounded-full border border-white/20 flex items-center justify-center backdrop-blur-md"><svg className="w-6 h-6 lg:w-8 lg:h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg></button>
-            <button onTouchStart={handleTouchStart('d')} onTouchEnd={handleTouchEnd('d')} onMouseDown={handleTouchStart('d')} onMouseUp={handleTouchEnd('d')} onMouseLeave={handleTouchEnd('d')} className="w-14 h-14 lg:w-16 lg:h-16 bg-white/10 active:bg-white/30 rounded-full border border-white/20 flex items-center justify-center backdrop-blur-md"><svg className="w-6 h-6 lg:w-8 lg:h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg></button>
+            <button onTouchStart={handleTouchStart('d')} onTouchEnd={handleTouchEnd('d')} onMouseDown={handleTouchStart('d')} onMouseUp={handleTouchEnd('d')} onMouseLeave={handleTouchEnd('d')} className="w-14 h-14 lg:w-16 lg:h-16 bg-white/10 active:bg-white/30 rounded-full border border-white/20 flex items-center justify-center backdrop-blur-md"><svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg></button>
           </div>
         </div>
       </div>
